@@ -1,0 +1,8 @@
+version: v1
+plugins:
+  - plugin: buf.build/community/stephenh-ts-proto
+    out: ../../packages/contracts/src/gen
+    opt:
+      - env=node
+      - esModuleInterop=true
+      - outputServices=generic-definitions

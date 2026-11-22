@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+enum HttpMethod {
+  HTTP_METHOD_UNSPECIFIED = 0;
+  HTTP_METHOD_GET = 1;
+  HTTP_METHOD_POST = 2;
+  HTTP_METHOD_PUT = 3;
+  HTTP_METHOD_DELETE = 4;
+  HTTP_METHOD_PATCH = 5;
+  HTTP_METHOD_OPTIONS = 6;
+  HTTP_METHOD_HEAD = 7;
+}
+
+message RateLimitPolicy {
+  bool enabled = 1;
+  uint32 capacity = 2;         // Maximum burst capacity
+  uint32 refill_rate = 3;      // Tokens added per second
+  string tier_name = 4;        // e.g. "free", "pro", "enterprise"
+}
+
+message AuthPolicy {
+  bool require_auth = 1;
+  string domain = 2;           // Resource domain e.g. "gateway", "billing"
+  uint64 required_permissions = 3; // 64-bit permission bitmask
+}
+
+message RouteRule {
+  string id = 1;
+  string tenant_id = 2;
+  string path_prefix = 3;
+  repeated HttpMethod methods = 4;
+  string upstream_url = 5;
+  bool strip_prefix = 6;
+  uint32 timeout_ms = 7;
+  RateLimitPolicy rate_limit = 8;
+  AuthPolicy auth = 9;
+  map<string, string> custom_headers = 10;
+  int64 updated_at_unix_ms = 11;
+}
+
+message RouteSnapshot {
+  string version = 1;
+  int64 generated_at_unix_ms = 2;
+  repeated RouteRule routes = 3;
+}
+
+message RouteInvalidationEvent {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_CREATED = 1;
+    ACTION_UPDATED = 2;
+    ACTION_DELETED = 3;
+  }
+  Action action = 1;
+  string route_id = 2;
+  string tenant_id = 3;
+  int64 timestamp_unix_ms = 4;
+}

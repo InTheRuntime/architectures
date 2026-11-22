@@ -1,0 +1,26 @@
+{
+  "name": "architectures",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Polyglot monorepo of reusable system architecture blueprints, specs, and reference implementations",
+  "license": "MIT",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "turbo check && cargo check --workspace",
+    "test": "turbo test && cargo test --workspace",
+    "clippy": "cargo clippy --workspace -- -D warnings",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "buf:lint": "buf lint specs/contracts",
+    "buf:generate": "buf generate specs/contracts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "turbo": "^2.3.0",
+    "typescript": "^5.7.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

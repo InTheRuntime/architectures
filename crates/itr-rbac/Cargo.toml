@@ -1,0 +1,16 @@
+[package]
+name = "itr-rbac"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Zero-allocation O(1) 64-bit bitmask Role-Based Access Control (RBAC) engine"
+
+[dependencies]
+serde = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde"]

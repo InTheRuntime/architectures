@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package auth.v1;
+
+message DomainPermission {
+  string domain = 1;           // Resource domain key e.g. "gateway"
+  uint64 permission_mask = 2;  // 64-bit bitmask representation
+}
+
+message UserClaims {
+  string user_id = 1;
+  string tenant_id = 2;
+  repeated DomainPermission permissions = 3;
+  int64 issued_at = 4;
+  int64 expires_at = 5;
+}
+
+message ApiKeyMetadata {
+  string key_id = 1;
+  string key_hash_sha256 = 2;
+  string tenant_id = 3;
+  string rate_limit_tier = 4;
+  repeated DomainPermission permissions = 5;
+  bool is_active = 6;
+  int64 expires_at = 7;
+}
+
+message AuthorizationEvaluationRequest {
+  string domain = 1;
+  uint64 user_mask = 2;
+  uint64 required_mask = 3;
+}
+
+message AuthorizationEvaluationResponse {
+  bool is_authorized = 1;
+  uint64 missing_permissions = 2;
+}
