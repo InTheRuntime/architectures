@@ -18,8 +18,36 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/cache:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.5
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/rbac:
     devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  services/cache-engine:
+    dependencies:
+      '@hono/node-server':
+        specifier: ^1.13.7
+        version: 1.19.19(hono@4.13.20)
+      '@intheruntime/cache':
+        specifier: workspace:*
+        version: link:../../packages/cache
+      hono:
+        specifier: ^4.6.14
+        version: 4.13.20
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.5
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

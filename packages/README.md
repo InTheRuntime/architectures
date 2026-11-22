@@ -10,4 +10,5 @@ This directory contains shared TypeScript packages published under the `@intheru
 | :--- | :--- | :--- |
 | **`@intheruntime/contracts`** | `packages/contracts` | TypeScript client/server bindings generated from `specs/contracts/` via `buf`. |
 | **`@intheruntime/rbac`** | `packages/rbac` | 64-bit BigInt bitmask matrix manipulation, role aggregation, and permission checks. |
+| **`@intheruntime/cache`** | `packages/cache` | High-performance O(1) in-memory LRU Cache with TTL expiration and hit-ratio telemetry. |
 | **`@intheruntime/config`** | `packages/config` | Shared TypeScript configuration presets (tsconfig, Biome presets). |
