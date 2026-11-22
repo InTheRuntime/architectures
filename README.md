@@ -75,4 +75,4 @@ cargo check --workspace
 
 ## License
 
-Dual-licensed under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE), at your option.
+The Complete Project is Licensed under [MIT](./LICENSE).
