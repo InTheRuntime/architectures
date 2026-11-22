@@ -13,4 +13,5 @@ Every service contains:
 
 | Service | Architecture Domain | Description | Status |
 | :--- | :--- | :--- | :--- |
-| **`services/gateway`** | Core Infrastructure | High-performance API Gateway featuring Bitwise RBAC, Token Bucket Rate Limiting, and Decoupled Control Plane. | Active |
+| **`services/rate-limiter`** | Core Infrastructure | Standalone HTTP Rate Limiter with continuous Token Bucket, atomic Redis Lua script, and IETF headers. | Active |
+| **`services/gateway`** | Core Infrastructure | High-performance API Gateway featuring Bitwise RBAC, Token Bucket Rate Limiting, and Decoupled Control Plane. | Planned |

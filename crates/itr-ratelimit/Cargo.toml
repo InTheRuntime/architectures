@@ -1,0 +1,20 @@
+[package]
+name = "itr-ratelimit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Distributed Token Bucket Rate Limiter with atomic Redis Lua and thread-safe in-memory fallback"
+
+[dependencies]
+redis = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
