@@ -30,7 +30,7 @@ impl PermissionMask {
 
     #[inline(always)]
     pub const fn from_shift(shift: u8) -> Self {
-        assert!(shift < 64, "Bitmask shift must be in 0..63");
+        assert!(shift < 64, "Bitmask shift must be iwn 0..63");
         Self(1u64 << shift)
     }
 

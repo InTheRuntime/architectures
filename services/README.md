@@ -15,4 +15,5 @@ Every service contains:
 | :--- | :--- | :--- | :--- |
 | **`services/rate-limiter`** | Core Infrastructure | Standalone HTTP Rate Limiter with continuous Token Bucket, atomic Redis Lua script, and IETF headers. | Active |
 | **`services/cache-engine`** | Data & Storage | High-performance In-Memory LRU Cache Microservice with TTL expiration and hit-ratio telemetry. | Active |
+| **`services/load-balancer`** | Core Infrastructure | HTTP Reverse Proxy & Load Balancer with dynamic Round-Robin, Least-Connections, and Active Health Checking. | Active |
 | **`services/gateway`** | Core Infrastructure | High-performance API Gateway featuring Bitwise RBAC, Token Bucket Rate Limiting, and Decoupled Control Plane. | Planned |
