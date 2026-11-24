@@ -1,0 +1,22 @@
+{
+  "name": "@intheruntime/service-websocket-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "High-performance WebSocket Gateway with room channels, heartbeat zombie detection, and connection lifecycle management",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "test": "node --test test/**/*.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  }
+}

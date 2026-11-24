@@ -32,10 +32,10 @@ architectures/
 
 | Domain | Examples | Status |
 | :--- | :--- | :--- |
-| **Real-Time & Messaging** | WebSocket gateways, pub/sub fan-out, presence, delivery guarantees | Planned |
+| **Core Infrastructure** | API gateways, rate limiters, load balancers, auth & bitwise RBAC | Active |
+| **Real-Time & Messaging** | WebSocket gateways, pub/sub fan-out, presence, delivery guarantees | Active |
+| **Data & Storage** | In-memory LRU caching, search indexing, event sourcing, storage engines | Active |
 | **Media & Streaming** | Chunked/resumable file uploads, adaptive video streaming (HLS/DASH), WebRTC | Planned |
-| **Data & Storage** | Distributed caching, search indexing, event sourcing, storage engines | Planned |
-| **Core Infrastructure** | API gateways, rate limiters, job queues, auth & bitwise RBAC | Planned |
 | **AI & Automation** | Agent execution harnesses, RAG pipelines, async workflow engines | Planned |
 
 ## Standard Module Layout

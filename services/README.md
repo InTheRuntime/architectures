@@ -17,3 +17,4 @@ Every service contains:
 | **`services/cache-engine`** | Data & Storage | High-performance In-Memory LRU Cache Microservice with TTL expiration and hit-ratio telemetry. | Active |
 | **`services/load-balancer`** | Core Infrastructure | HTTP Reverse Proxy & Load Balancer with dynamic Round-Robin, Least-Connections, and Active Health Checking. | Active |
 | **`services/gateway`** | Core Infrastructure | Unified Production API Gateway integrating Rate Limiting, Bitwise RBAC, In-Memory Caching, and Load Balancing. | Active |
+| **`services/websocket-gateway`** | Real-Time & Messaging | High-performance WebSocket Gateway with room channels, heartbeat zombie watchdog, and connection lifecycle management. | Active |
