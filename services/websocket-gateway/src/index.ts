@@ -1,18 +1,41 @@
 import { createServer } from "node:http";
 import { type WebSocket, WebSocketServer } from "ws";
-import { ConnectionManager } from "./connection-manager.js";
+import { ClusteredConnectionManager } from "./clustered-connection-manager.js";
+import type { PubSubAdapter } from "./pubsub/adapter.js";
+import { InMemoryPubSubAdapter, InMemoryPubSubHub } from "./pubsub/in-memory-adapter.js";
+import { RedisPubSubAdapter } from "./pubsub/redis-adapter.js";
 import type { ClientMessage } from "./types.js";
 
-const manager = new ConnectionManager();
+const nodeId = process.env.NODE_ID || `node_${process.pid}`;
+const redisUrl = process.env.REDIS_URL;
+const useRedis = Boolean(redisUrl || process.env.REDIS_HOST);
+
+let pubsub: PubSubAdapter;
+
+if (useRedis) {
+  const redisAdapter = new RedisPubSubAdapter(nodeId, { redisUrl });
+  try {
+    await redisAdapter.connect();
+    pubsub = redisAdapter;
+    console.log(`[${nodeId}] Connected to Redis Pub/Sub backplane`);
+  } catch (err) {
+    console.warn(`[${nodeId}] Redis connection failed, falling back to in-memory hub:`, err);
+    pubsub = new InMemoryPubSubAdapter(nodeId, new InMemoryPubSubHub());
+  }
+} else {
+  pubsub = new InMemoryPubSubAdapter(nodeId, new InMemoryPubSubHub());
+}
+
+const manager = new ClusteredConnectionManager({ nodeId, pubsub });
 manager.startHeartbeatWatchdog(15_000);
 
-// Create HTTP server for health, observability, and WebSocket upgrade handling
+// Create HTTP server for health, cluster observability, and WebSocket upgrade handling
 const server = createServer((req, res) => {
   const url = req.url || "/";
 
   if (url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", service: "websocket-gateway" }));
+    res.end(JSON.stringify({ status: "ok", service: "websocket-gateway", node_id: nodeId }));
     return;
   }
 
@@ -43,19 +66,19 @@ wss.on("connection", (ws: WebSocket) => {
   });
 
   // Message dispatcher
-  ws.on("message", (data) => {
+  ws.on("message", async (data) => {
     try {
       const msg: ClientMessage = JSON.parse(data.toString());
 
       switch (msg.type) {
         case "join_room": {
-          manager.joinRoom(managed.id, msg.room);
+          await manager.joinRoom(managed.id, msg.room);
           manager.sendTo(managed.id, { type: "joined", room: msg.room });
           break;
         }
 
         case "leave_room": {
-          manager.leaveRoom(managed.id, msg.room);
+          await manager.leaveRoom(managed.id, msg.room);
           manager.sendTo(managed.id, { type: "left", room: msg.room });
           break;
         }
@@ -69,17 +92,8 @@ wss.on("connection", (ws: WebSocket) => {
             return;
           }
 
-          manager.broadcastToRoom(
-            msg.room,
-            {
-              type: "message",
-              room: msg.room,
-              sender: managed.id,
-              payload: msg.payload,
-              timestamp_ms: Date.now(),
-            },
-            managed.id, // Skip echo to sender
-          );
+          // Broadcast across cluster (local delivery + backplane publication)
+          await manager.broadcast(msg.room, msg.payload, managed.id);
           break;
         }
 
@@ -96,18 +110,18 @@ wss.on("connection", (ws: WebSocket) => {
     }
   });
 
-  ws.on("close", () => {
-    manager.removeSocket(managed.id);
+  ws.on("close", async () => {
+    await manager.removeSocket(managed.id);
   });
 
-  ws.on("error", () => {
-    manager.removeSocket(managed.id);
+  ws.on("error", async () => {
+    await manager.removeSocket(managed.id);
   });
 });
 
 const port = Number(process.env.PORT) || 8083;
 server.listen(port, () => {
   console.log(
-    `🚀 WebSocket Gateway listening on ws://localhost:${port} and http://localhost:${port}`,
+    `🚀 WebSocket Gateway [${nodeId}] listening on ws://localhost:${port} and http://localhost:${port}`,
   );
 });

@@ -19,6 +19,10 @@ export class ConnectionManager {
   private readonly roomSubscribers = new Map<string, Set<string>>();
   private heartbeatTimer: NodeJS.Timeout | null = null;
 
+  public getConnection(id: string): ManagedSocket | undefined {
+    return this.connections.get(id);
+  }
+
   public registerSocket(ws: WebSocket): ManagedSocket {
     const id = `conn_${randomUUID().replace(/-/g, "").slice(0, 10)}`;
     const managed: ManagedSocket = {
