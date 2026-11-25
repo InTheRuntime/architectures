@@ -11,6 +11,7 @@ A production-minded WebSocket Gateway featuring **persistent bi-directional comm
 - 🌐 **Clustered Multi-Node Fan-Out**: Backplane pub/sub synchronization (Redis or in-memory hub) for seamless horizontal scaling across gateway instances.
 - 🟢 **Ephemeral Presence & Roster Sync**: Sliding-window heartbeat leases (Redis Sorted Sets) maintain active online member lists with zero ghost-user leakage.
 - ✍️ **Ephemeral Typing Indicators**: High-frequency typing notifications with 3-second auto-expiration without requiring explicit "stopped typing" packets.
+- 🔄 **Disconnect Replay Buffers**: Ring buffers (in-memory) & Redis Streams track monotonic sequence IDs per room to replay missed messages after network disconnects.
 - 🎯 **Dynamic Topic Ref-Counting**: Gateway nodes dynamically subscribe to broker channels only when local clients exist, eliminating cluster broadcast storms.
 - 🩺 **Zombie Connection Scavenger**: Heartbeat `ping`/`pong` watchdog automatically detects dead sockets and terminates orphaned connections.
 - 📊 **Live Telemetry & Diagnostics**: Exposes `GET /stats` and `GET /health` with cluster node state and channel subscriptions.
@@ -89,11 +90,36 @@ All other clients in room `engineering` (across **all** cluster nodes) instantly
   "room": "engineering",
   "sender": "conn_9a81b2c4",
   "payload": { "text": "Deployment to staging complete!" },
-  "timestamp_ms": 1732450000000
+  "timestamp_ms": 1732450000000,
+  "seq": 42
 }
 ```
 
-### 3. Ephemeral Typing Indicator
+### 3. Reconnect & Catch Up on Missed Messages
+If a client temporarily disconnects (e.g. mobile elevator drop), reconnect with the last sequence offset received:
+Send:
+```json
+{
+  "type": "join_room",
+  "room": "engineering",
+  "user_id": "alice",
+  "last_received_seq": 42
+}
+```
+Receive immediate replay of all missed frames in sequence:
+```json
+{
+  "type": "replay_messages",
+  "room": "engineering",
+  "messages": [
+    { "seq": 43, "sender": "conn_1", "payload": "...", "timestamp_ms": 1732450001000 },
+    { "seq": 44, "sender": "conn_2", "payload": "...", "timestamp_ms": 1732450002000 }
+  ],
+  "current_seq": 44
+}
+```
+
+### 4. Ephemeral Typing Indicator
 Send:
 ```json
 { "type": "typing", "room": "engineering", "is_typing": true }

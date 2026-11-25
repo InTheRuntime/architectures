@@ -7,6 +7,9 @@ import { RedisPresenceAdapter } from "./presence/redis-adapter.js";
 import type { PubSubAdapter } from "./pubsub/adapter.js";
 import { InMemoryPubSubAdapter, InMemoryPubSubHub } from "./pubsub/in-memory-adapter.js";
 import { RedisPubSubAdapter } from "./pubsub/redis-adapter.js";
+import type { ReplayBufferAdapter } from "./replay/adapter.js";
+import { InMemoryReplayBuffer } from "./replay/in-memory-replay-buffer.js";
+import { RedisStreamReplayBuffer } from "./replay/redis-stream-replay-buffer.js";
 import type { ClientMessage } from "./types.js";
 
 const nodeId = process.env.NODE_ID || `node_${process.pid}`;
@@ -15,26 +18,31 @@ const useRedis = Boolean(redisUrl || process.env.REDIS_HOST);
 
 let pubsub: PubSubAdapter;
 let presence: PresenceAdapter;
+let replay: ReplayBufferAdapter;
 
 if (useRedis) {
   const redisAdapter = new RedisPubSubAdapter(nodeId, { redisUrl });
   const redisPresence = new RedisPresenceAdapter({ redisUrl });
+  const redisReplay = new RedisStreamReplayBuffer({ redisUrl });
   try {
-    await Promise.all([redisAdapter.connect(), redisPresence.connect()]);
+    await Promise.all([redisAdapter.connect(), redisPresence.connect(), redisReplay.connect()]);
     pubsub = redisAdapter;
     presence = redisPresence;
-    console.log(`[${nodeId}] Connected to Redis Pub/Sub & Presence backplane`);
+    replay = redisReplay;
+    console.log(`[${nodeId}] Connected to Redis Pub/Sub, Presence & Stream Replay backplane`);
   } catch (err) {
     console.warn(`[${nodeId}] Redis connection failed, falling back to in-memory:`, err);
     pubsub = new InMemoryPubSubAdapter(nodeId, new InMemoryPubSubHub());
     presence = new InMemoryPresenceAdapter();
+    replay = new InMemoryReplayBuffer();
   }
 } else {
   pubsub = new InMemoryPubSubAdapter(nodeId, new InMemoryPubSubHub());
   presence = new InMemoryPresenceAdapter();
+  replay = new InMemoryReplayBuffer();
 }
 
-const manager = new ClusteredConnectionManager({ nodeId, pubsub, presence });
+const manager = new ClusteredConnectionManager({ nodeId, pubsub, presence, replay });
 manager.startHeartbeatWatchdog(15_000);
 
 // Create HTTP server for health, cluster observability, and WebSocket upgrade handling
@@ -80,13 +88,38 @@ wss.on("connection", (ws: WebSocket) => {
 
       switch (msg.type) {
         case "join_room": {
-          const { onlineUsers } = await manager.joinRoom(managed.id, msg.room, msg.user_id);
+          const joinResult = await manager.joinRoom(
+            managed.id,
+            msg.room,
+            msg.user_id,
+            msg.last_received_seq,
+          );
+
           manager.sendTo(managed.id, { type: "joined", room: msg.room });
           manager.sendTo(managed.id, {
             type: "presence_sync",
             room: msg.room,
-            users: onlineUsers,
+            users: joinResult.onlineUsers,
           });
+
+          // Disconnect Recovery: Handle missed message catchup
+          if (joinResult.isExpired) {
+            manager.sendTo(managed.id, {
+              type: "replay_expired",
+              room: msg.room,
+              oldest_available_seq: joinResult.oldestAvailableSeq ?? 0,
+              current_seq: joinResult.currentSeq ?? 0,
+              message:
+                "Requested sequence offset has expired from stream buffer. Full state refresh required.",
+            });
+          } else if (joinResult.replayedMessages && joinResult.replayedMessages.length > 0) {
+            manager.sendTo(managed.id, {
+              type: "replay_messages",
+              room: msg.room,
+              messages: joinResult.replayedMessages,
+              current_seq: joinResult.currentSeq ?? 0,
+            });
+          }
           break;
         }
 
@@ -105,7 +138,7 @@ wss.on("connection", (ws: WebSocket) => {
             return;
           }
 
-          // Broadcast across cluster (local delivery + backplane publication)
+          // Broadcast across cluster (local delivery + backplane publication + replay buffer)
           await manager.broadcast(msg.room, msg.payload, managed.id);
           break;
         }

@@ -3,12 +3,23 @@ import type { WebSocket } from "ws";
 import { ConnectionManager, type ManagedSocket } from "./connection-manager.js";
 import type { PresenceAdapter } from "./presence/adapter.js";
 import type { PubSubAdapter, PubSubMessage } from "./pubsub/adapter.js";
-import type { ServerMessage } from "./types.js";
+import type { ReplayBufferAdapter } from "./replay/adapter.js";
+import type { ReplayedMessage, ServerMessage } from "./types.js";
 
 export interface ClusteredManagerOptions {
   nodeId?: string;
   pubsub: PubSubAdapter;
   presence?: PresenceAdapter;
+  replay?: ReplayBufferAdapter;
+}
+
+export interface JoinRoomResult {
+  success: boolean;
+  onlineUsers: string[];
+  replayedMessages?: ReplayedMessage[];
+  currentSeq?: number;
+  isExpired?: boolean;
+  oldestAvailableSeq?: number;
 }
 
 export interface ClusteredStats {
@@ -23,17 +34,20 @@ export interface ClusteredStats {
  * ClusteredConnectionManager coordinates local WebSocket connections with:
  * 1. Distributed Pub/Sub backplane (cross-node fan-out, dynamic channel subscriptions).
  * 2. Distributed Ephemeral Presence (sliding-window heartbeats, typing indicators, roster sync).
+ * 3. Stream Replay Buffer (monotonic sequence IDs, disconnect catchup, zero message loss).
  */
 export class ClusteredConnectionManager {
   public readonly nodeId: string;
   private readonly localManager: ConnectionManager;
   private readonly pubsub: PubSubAdapter;
   private readonly presence?: PresenceAdapter;
+  private readonly replay?: ReplayBufferAdapter;
 
   constructor(options: ClusteredManagerOptions) {
     this.nodeId = options.nodeId ?? `node_${randomUUID().replace(/-/g, "").slice(0, 8)}`;
     this.pubsub = options.pubsub;
     this.presence = options.presence;
+    this.replay = options.replay;
     this.localManager = new ConnectionManager();
   }
 
@@ -78,7 +92,8 @@ export class ClusteredConnectionManager {
     connId: string,
     room: string,
     userId?: string,
-  ): Promise<{ success: boolean; onlineUsers: string[] }> {
+    lastReceivedSeq?: number,
+  ): Promise<JoinRoomResult> {
     const client = this.getConnection(connId);
     if (!client) return { success: false, onlineUsers: [] };
 
@@ -116,7 +131,30 @@ export class ClusteredConnectionManager {
       onlineUsers = [client.userId];
     }
 
-    return { success: true, onlineUsers };
+    // Replay buffer check: catchup missed messages if reconnecting
+    let replayedMessages: ReplayedMessage[] | undefined;
+    let currentSeq: number | undefined;
+    let isExpired: boolean | undefined;
+    let oldestAvailableSeq: number | undefined;
+
+    if (this.replay && lastReceivedSeq !== undefined) {
+      const range = await this.replay.getRange(room, lastReceivedSeq);
+      currentSeq = range.currentSeq;
+      oldestAvailableSeq = range.oldestSeq;
+      isExpired = range.isExpired;
+      if (!range.isExpired) {
+        replayedMessages = range.messages;
+      }
+    }
+
+    return {
+      success: true,
+      onlineUsers,
+      replayedMessages,
+      currentSeq,
+      isExpired,
+      oldestAvailableSeq,
+    };
   }
 
   public async leaveRoom(connId: string, room: string): Promise<boolean> {
@@ -203,23 +241,32 @@ export class ClusteredConnectionManager {
 
   /**
    * Broadcast a user message across the cluster.
+   * If a ReplayBuffer is configured, assigns a monotonic sequence ID and buffers for catchup.
    */
   public async broadcast(
     room: string,
     payload: unknown,
     senderConnId: string,
-  ): Promise<{ localDelivered: number }> {
+  ): Promise<{ localDelivered: number; seq?: number }> {
     const timestamp_ms = Date.now();
+    let seq: number | undefined;
+
+    if (this.replay) {
+      const appended = await this.replay.append(room, senderConnId, payload, timestamp_ms);
+      seq = appended.seq;
+    }
+
     const serverMessage: ServerMessage = {
       type: "message",
       room,
       sender: senderConnId,
       payload,
       timestamp_ms,
+      seq,
     };
 
     const localDelivered = await this.broadcastServerMessage(room, serverMessage, senderConnId);
-    return { localDelivered };
+    return { localDelivered, seq };
   }
 
   /**
@@ -314,6 +361,9 @@ export class ClusteredConnectionManager {
     await this.pubsub.disconnect();
     if (this.presence) {
       await this.presence.disconnect();
+    }
+    if (this.replay) {
+      await this.replay.disconnect();
     }
   }
 }

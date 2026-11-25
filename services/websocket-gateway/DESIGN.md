@@ -241,3 +241,55 @@ sequenceDiagram
     Note over Cluster: Typing lease auto-expires without explicit stop event!
 ```
 
+---
+
+## 9. Disconnect Replay Buffers & Guaranteed Delivery (Stream Offsets)
+
+### The Mobile Drop Dilemma
+In real-world mobile networks (elevators, subway tunnels, cell tower transitions), client TCP streams drop constantly. If Alice is offline for 8 seconds:
+- 3 new messages are broadcast to `#trading-floor`.
+- In a naive system, those messages are lost forever to Alice.
+- Making clients query a heavy relational database on every reconnect causes database connection exhaustion and latency spikes.
+
+### Monotonic Sequence IDs & Ring Buffers
+Every broadcast message in a room is assigned a strictly increasing integer sequence offset $s \in \mathbb{N}^+$:
+
+$$\text{Messages}(R) = [ (s_1, m_1), (s_2, m_2), \dots, (s_k, m_k) ] \quad \text{where } s_{i} = s_{i-1} + 1$$
+
+- **In-Memory**: A circular ring buffer per room with capacity $K$ (e.g. 500 messages).
+- **Redis Streams**: Persistent stream per room using `XADD` with approximate trimming (`MAXLEN ~ 1000`) and atomic sequence counters (`INCR`).
+
+### The Reconnect Catchup State Machine
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (Client)
+    participant Cluster as Gateway Cluster
+    participant Buffer as Stream Replay Buffer
+
+    Note over Alice,Cluster: Alice receives Message seq: 42
+    Note over Alice: Network Drops (Elevator)...
+    Note over Cluster: Messages seq: 43, 44, 45 published while Alice offline!
+    
+    Note over Alice: Network Restored (Wi-Fi)
+    Alice->>Cluster: join_room: { room: "trade", last_received_seq: 42 }
+    
+    Cluster->>Buffer: getRange(room: "trade", fromSeq: 42)
+    Buffer-->>Cluster: RangeResult: [msg_43, msg_44, msg_45], currentSeq: 45
+    
+    Cluster-->>Alice: replay_messages: { room: "trade", messages: [43, 44, 45], current_seq: 45 }
+    
+    Note over Alice: Alice plays back missed frames in exact sequence with ZERO loss!
+    Note over Alice,Cluster: Alice transitions seamlessly back to live real-time stream!
+```
+
+### The 3 Catchup Scenarios
+
+| Scenario | Condition | Gateway Response | Client Action |
+| :--- | :--- | :--- | :--- |
+| **Normal Catchup** | $\text{oldestSeq} - 1 \le \text{lastSeq} < \text{currentSeq}$ | `replay_messages` payload with missed range | Ingests missing frames in order, resumes live stream |
+| **Already Up-to-Date** | $\text{lastSeq} \ge \text{currentSeq}$ | No replay payload needed | Immediately receives next live message |
+| **Buffer Overflow (Expired)** | $\text{lastSeq} < \text{oldestSeq} - 1$ | `replay_expired` frame | Triggers full entity reload via REST/GraphQL |
+
+
