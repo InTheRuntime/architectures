@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
 import { ConnectionManager, type ManagedSocket } from "./connection-manager.js";
+import type { PresenceAdapter } from "./presence/adapter.js";
 import type { PubSubAdapter, PubSubMessage } from "./pubsub/adapter.js";
 import type { ServerMessage } from "./types.js";
 
 export interface ClusteredManagerOptions {
   nodeId?: string;
   pubsub: PubSubAdapter;
+  presence?: PresenceAdapter;
 }
 
 export interface ClusteredStats {
@@ -18,36 +20,49 @@ export interface ClusteredStats {
 }
 
 /**
- * ClusteredConnectionManager coordinates local WebSocket connections with a
- * distributed Pub/Sub backplane (Redis or In-Memory Hub).
- *
- * Implements:
- * 1. Horizontal cross-node broadcast fan-out.
- * 2. Dynamic channel subscription ref-counting: only subscribes to the broker
- *    when local subscribers > 0, and unsubscribes when local subscribers drop to 0.
- * 3. Echo suppression to prevent circular re-broadcasts.
+ * ClusteredConnectionManager coordinates local WebSocket connections with:
+ * 1. Distributed Pub/Sub backplane (cross-node fan-out, dynamic channel subscriptions).
+ * 2. Distributed Ephemeral Presence (sliding-window heartbeats, typing indicators, roster sync).
  */
 export class ClusteredConnectionManager {
   public readonly nodeId: string;
   private readonly localManager: ConnectionManager;
   private readonly pubsub: PubSubAdapter;
+  private readonly presence?: PresenceAdapter;
 
   constructor(options: ClusteredManagerOptions) {
     this.nodeId = options.nodeId ?? `node_${randomUUID().replace(/-/g, "").slice(0, 8)}`;
     this.pubsub = options.pubsub;
+    this.presence = options.presence;
     this.localManager = new ConnectionManager();
   }
 
-  public registerSocket(ws: WebSocket): ManagedSocket {
-    return this.localManager.registerSocket(ws);
+  public registerSocket(ws: WebSocket, userId?: string): ManagedSocket {
+    return this.localManager.registerSocket(ws, userId);
   }
 
   public async removeSocket(connId: string): Promise<void> {
     const client = this.getConnection(connId);
     if (!client) return;
 
-    // Capture rooms client was in before removal to check ref-counts
     const clientRooms = Array.from(client.rooms);
+    const userId = client.userId;
+
+    // Presence update: remove user from all joined rooms and notify cluster
+    if (this.presence) {
+      for (const room of clientRooms) {
+        await this.presence.removeUser(room, userId);
+        await this.broadcastServerMessage(
+          room,
+          {
+            type: "user_left",
+            room,
+            user_id: userId,
+          },
+          connId,
+        );
+      }
+    }
 
     this.localManager.removeSocket(connId);
 
@@ -59,21 +74,70 @@ export class ClusteredConnectionManager {
     }
   }
 
-  public async joinRoom(connId: string, room: string): Promise<boolean> {
-    const hadZeroLocal = this.getLocalSubscriberCount(room) === 0;
+  public async joinRoom(
+    connId: string,
+    room: string,
+    userId?: string,
+  ): Promise<{ success: boolean; onlineUsers: string[] }> {
+    const client = this.getConnection(connId);
+    if (!client) return { success: false, onlineUsers: [] };
 
+    if (userId) {
+      client.userId = userId;
+    }
+
+    const hadZeroLocal = this.getLocalSubscriberCount(room) === 0;
     const joined = this.localManager.joinRoom(connId, room);
-    if (!joined) return false;
+    if (!joined) return { success: false, onlineUsers: [] };
 
     // Dynamic Subscribe Check: First local subscriber triggers broker subscription
     if (hadZeroLocal && !this.pubsub.isSubscribed(room)) {
       await this.pubsub.subscribe(room, (remoteMsg) => this.handleRemoteClusterMessage(remoteMsg));
     }
 
-    return true;
+    let onlineUsers: string[] = [];
+
+    // Presence update: register heartbeat and notify peers
+    if (this.presence) {
+      await this.presence.heartbeat(room, client.userId);
+      onlineUsers = await this.presence.getOnlineUsers(room);
+
+      // Broadcast join event to all other room members across the cluster
+      await this.broadcastServerMessage(
+        room,
+        {
+          type: "user_joined",
+          room,
+          user_id: client.userId,
+        },
+        connId,
+      );
+    } else {
+      onlineUsers = [client.userId];
+    }
+
+    return { success: true, onlineUsers };
   }
 
   public async leaveRoom(connId: string, room: string): Promise<boolean> {
+    const client = this.getConnection(connId);
+    if (!client) return false;
+
+    const userId = client.userId;
+
+    if (this.presence) {
+      await this.presence.removeUser(room, userId);
+      await this.broadcastServerMessage(
+        room,
+        {
+          type: "user_left",
+          room,
+          user_id: userId,
+        },
+        connId,
+      );
+    }
+
     const left = this.localManager.leaveRoom(connId, room);
     if (!left) return false;
 
@@ -86,8 +150,59 @@ export class ClusteredConnectionManager {
   }
 
   /**
-   * Broadcast a message across the entire cluster.
-   * Delivers immediately to local sockets and publishes to the backplane for remote nodes.
+   * Set or clear ephemeral typing status for a user in a room.
+   */
+  public async setTyping(connId: string, room: string, isTyping: boolean): Promise<boolean> {
+    const client = this.getConnection(connId);
+    if (!client || !client.rooms.has(room)) return false;
+
+    if (this.presence) {
+      await this.presence.setTyping(room, client.userId, isTyping);
+    }
+
+    // Broadcast typing event to all peers in the room (skipping sender)
+    await this.broadcastServerMessage(
+      room,
+      {
+        type: "user_typing",
+        room,
+        user_id: client.userId,
+        is_typing: isTyping,
+      },
+      connId,
+    );
+
+    return true;
+  }
+
+  /**
+   * Refresh presence leases for all rooms a client is currently participating in.
+   */
+  public async refreshPresence(connId: string): Promise<void> {
+    const client = this.getConnection(connId);
+    if (!client || !this.presence) return;
+
+    for (const room of client.rooms) {
+      await this.presence.heartbeat(room, client.userId);
+    }
+  }
+
+  public async getOnlineUsers(room: string): Promise<string[]> {
+    if (this.presence) {
+      return this.presence.getOnlineUsers(room);
+    }
+    return [];
+  }
+
+  public async getTypingUsers(room: string): Promise<string[]> {
+    if (this.presence) {
+      return this.presence.getTypingUsers(room);
+    }
+    return [];
+  }
+
+  /**
+   * Broadcast a user message across the cluster.
    */
   public async broadcast(
     room: string,
@@ -95,32 +210,42 @@ export class ClusteredConnectionManager {
     senderConnId: string,
   ): Promise<{ localDelivered: number }> {
     const timestamp_ms = Date.now();
-
-    // 1. Deliver to local sockets on this node (skipping sender)
-    const localDelivered = this.localManager.broadcastToRoom(
+    const serverMessage: ServerMessage = {
+      type: "message",
       room,
-      {
-        type: "message",
-        room,
-        sender: senderConnId,
-        payload,
-        timestamp_ms,
-      },
-      senderConnId,
-    );
+      sender: senderConnId,
+      payload,
+      timestamp_ms,
+    };
+
+    const localDelivered = await this.broadcastServerMessage(room, serverMessage, senderConnId);
+    return { localDelivered };
+  }
+
+  /**
+   * Broadcast an arbitrary ServerMessage across both local sockets and the distributed backplane.
+   */
+  public async broadcastServerMessage(
+    room: string,
+    message: ServerMessage,
+    senderConnId?: string,
+  ): Promise<number> {
+    // 1. Deliver to local sockets on this node (skipping sender)
+    const localDelivered = this.localManager.broadcastToRoom(room, message, senderConnId);
 
     // 2. Publish to backplane for all other nodes in the cluster
     const clusterMessage: PubSubMessage = {
       room,
       senderNodeId: this.nodeId,
-      senderConnId,
-      payload,
-      timestamp_ms,
+      senderConnId: senderConnId ?? "",
+      payload: message,
+      serverMessage: message,
+      timestamp_ms: Date.now(),
     };
 
     await this.pubsub.publish(room, clusterMessage);
 
-    return { localDelivered };
+    return localDelivered;
   }
 
   /**
@@ -132,7 +257,7 @@ export class ClusteredConnectionManager {
       return;
     }
 
-    const serverMessage: ServerMessage = {
+    const serverMsg: ServerMessage = msg.serverMessage ?? {
       type: "message",
       room: msg.room,
       sender: msg.senderConnId,
@@ -141,7 +266,7 @@ export class ClusteredConnectionManager {
     };
 
     // Forward to all local subscribers in this room
-    this.localManager.broadcastToRoom(msg.room, serverMessage);
+    this.localManager.broadcastToRoom(msg.room, serverMsg);
   }
 
   public sendTo(connId: string, message: ServerMessage): boolean {
@@ -187,5 +312,8 @@ export class ClusteredConnectionManager {
   public async shutdown(): Promise<void> {
     this.stopHeartbeatWatchdog();
     await this.pubsub.disconnect();
+    if (this.presence) {
+      await this.presence.disconnect();
+    }
   }
 }

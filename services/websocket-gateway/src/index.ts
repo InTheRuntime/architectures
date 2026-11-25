@@ -1,6 +1,9 @@
 import { createServer } from "node:http";
 import { type WebSocket, WebSocketServer } from "ws";
 import { ClusteredConnectionManager } from "./clustered-connection-manager.js";
+import type { PresenceAdapter } from "./presence/adapter.js";
+import { InMemoryPresenceAdapter } from "./presence/in-memory-adapter.js";
+import { RedisPresenceAdapter } from "./presence/redis-adapter.js";
 import type { PubSubAdapter } from "./pubsub/adapter.js";
 import { InMemoryPubSubAdapter, InMemoryPubSubHub } from "./pubsub/in-memory-adapter.js";
 import { RedisPubSubAdapter } from "./pubsub/redis-adapter.js";
@@ -11,22 +14,27 @@ const redisUrl = process.env.REDIS_URL;
 const useRedis = Boolean(redisUrl || process.env.REDIS_HOST);
 
 let pubsub: PubSubAdapter;
+let presence: PresenceAdapter;
 
 if (useRedis) {
   const redisAdapter = new RedisPubSubAdapter(nodeId, { redisUrl });
+  const redisPresence = new RedisPresenceAdapter({ redisUrl });
   try {
-    await redisAdapter.connect();
+    await Promise.all([redisAdapter.connect(), redisPresence.connect()]);
     pubsub = redisAdapter;
-    console.log(`[${nodeId}] Connected to Redis Pub/Sub backplane`);
+    presence = redisPresence;
+    console.log(`[${nodeId}] Connected to Redis Pub/Sub & Presence backplane`);
   } catch (err) {
-    console.warn(`[${nodeId}] Redis connection failed, falling back to in-memory hub:`, err);
+    console.warn(`[${nodeId}] Redis connection failed, falling back to in-memory:`, err);
     pubsub = new InMemoryPubSubAdapter(nodeId, new InMemoryPubSubHub());
+    presence = new InMemoryPresenceAdapter();
   }
 } else {
   pubsub = new InMemoryPubSubAdapter(nodeId, new InMemoryPubSubHub());
+  presence = new InMemoryPresenceAdapter();
 }
 
-const manager = new ClusteredConnectionManager({ nodeId, pubsub });
+const manager = new ClusteredConnectionManager({ nodeId, pubsub, presence });
 manager.startHeartbeatWatchdog(15_000);
 
 // Create HTTP server for health, cluster observability, and WebSocket upgrade handling
@@ -72,8 +80,13 @@ wss.on("connection", (ws: WebSocket) => {
 
       switch (msg.type) {
         case "join_room": {
-          await manager.joinRoom(managed.id, msg.room);
+          const { onlineUsers } = await manager.joinRoom(managed.id, msg.room, msg.user_id);
           manager.sendTo(managed.id, { type: "joined", room: msg.room });
+          manager.sendTo(managed.id, {
+            type: "presence_sync",
+            room: msg.room,
+            users: onlineUsers,
+          });
           break;
         }
 
@@ -97,7 +110,21 @@ wss.on("connection", (ws: WebSocket) => {
           break;
         }
 
+        case "typing": {
+          if (!managed.rooms.has(msg.room)) {
+            manager.sendTo(managed.id, {
+              type: "error",
+              message: `Must join room '${msg.room}' before emitting typing status`,
+            });
+            return;
+          }
+
+          await manager.setTyping(managed.id, msg.room, msg.is_typing);
+          break;
+        }
+
         case "ping": {
+          await manager.refreshPresence(managed.id);
           manager.sendTo(managed.id, { type: "pong" });
           break;
         }

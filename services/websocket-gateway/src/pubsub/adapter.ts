@@ -1,8 +1,11 @@
+import type { ServerMessage } from "../types.js";
+
 export interface PubSubMessage {
   room: string;
   senderNodeId: string;
   senderConnId: string;
   payload: unknown;
+  serverMessage?: ServerMessage;
   timestamp_ms: number;
 }
 

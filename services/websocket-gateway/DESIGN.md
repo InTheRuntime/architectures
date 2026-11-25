@@ -159,3 +159,85 @@ To prevent gateway nodes from being overwhelmed by global cluster traffic across
 1. **Dynamic Subscribe**: A gateway node executes `redis.subscribe(room)` **only when the local subscriber count transitions from 0 to 1**.
 2. **Dynamic Unsubscribe**: When the last local socket leaves a room or disconnects (local subscribers drop from 1 to 0), the gateway executes `redis.unsubscribe(room)`.
 3. **Echo Suppression**: Envelopes carry `senderNodeId`. When Redis broadcasts a message back to the originating node, the node verifies `msg.senderNodeId === this.nodeId` and silently drops it to prevent duplicate local delivery.
+
+---
+
+## 7. Ephemeral Presence & The Ghost User Dilemma
+
+In real-time collaboration (Slack, Discord, Figma, Linear), users expect to see a live roster of who is currently online in a room.
+
+### Why Relational DBs and Static Records Fail
+If a mobile client loses signal, runs out of battery, or force-quits:
+- The server receives **zero TCP teardown packets**.
+- If presence relied on explicit `disconnect` SQL/document updates, crashed users become permanent **"ghosts"** that appear online indefinitely.
+
+### The Sliding-Window Sorted Set Model
+Instead of storing static flags, presence is modeled as a continuously decaying lease backed by **Redis Sorted Sets** (`ZSET`):
+
+$$\text{Roster}(R) = \{ (u, t) \mid u \in \text{Users}, t \in \mathbb{R}^+ \}$$
+
+Where:
+- Member $u$ is the `userId`.
+- Score $t$ is the millisecond timestamp when the user was last seen (`Date.now()`).
+
+```mermaid
+flowchart LR
+    subgraph SortedSet ["Redis Sorted Set: ws:presence:roster:room_42"]
+        direction LR
+        DeadUser["Bob (Score: now - 35s)"] -.->|Expired| Cutoff["Threshold: (now - 15s)"]
+        Cutoff --> ActiveAlice["Alice (Score: now - 4s)"]
+        ActiveAlice --> ActiveCharlie["Charlie (Score: now - 1s)"]
+    end
+
+    ZREM["ZREMRANGEBYSCORE -inf (now - 15s)"] ==>|Atomically Purges| DeadUser
+    ZRANGE["ZRANGE 0 -1"] ==>|Returns Active Roster| ActiveList["[Alice, Charlie]"]
+```
+
+### Atomic Lease Operations
+
+1. **Heartbeat / Interaction**:
+   `ZADD ws:presence:roster:<room> <now_ms> <user_id>` ($O(\log N)$)
+2. **Atomic Prune & Query** (Pipelined in 1 network round-trip):
+   ```redis
+   ZREMRANGEBYSCORE ws:presence:roster:<room> -inf (<now_ms> - <ttl_ms>)
+   ZRANGE ws:presence:roster:<room> 0 -1
+   ```
+3. **Explicit Departure**:
+   `ZREM ws:presence:roster:<room> <user_id>` ($O(\log N)$)
+
+---
+
+## 8. Ephemeral Typing Indicators
+
+Typing indicators are high-frequency, ephemeral micro-states. A user may begin typing and then abandon their device without sending a "stopped typing" event.
+
+### Self-Expiring Typing Leases
+- Key: `ws:presence:typing:<room>`
+- Score: Millisecond expiration timestamp ($T_{\text{expires}} = T_{\text{now}} + 3000\text{ms}$).
+- **Automatic Expiration**: When querying typing members, all scores $< T_{\text{now}}$ are purged with `ZREMRANGEBYSCORE`.
+- **Explicit Stop**: Immediate deletion via `ZREM`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (Node 1)
+    participant Cluster as Gateway Cluster & Redis
+    actor Bob as Bob (Node 2)
+
+    Alice->>Cluster: join_room: "lounge"
+    Cluster->>Cluster: Presence Heartbeat recorded (TTL: 15s)
+    Cluster-->>Alice: presence_sync: ["alice"]
+    
+    Bob->>Cluster: join_room: "lounge"
+    Cluster->>Cluster: Presence Heartbeat recorded (TTL: 15s)
+    Cluster-->>Bob: presence_sync: ["alice", "bob"]
+    Cluster-->>Alice: user_joined: "bob"
+
+    Alice->>Cluster: typing: { room: "lounge", is_typing: true }
+    Cluster->>Cluster: Typing lease set (TTL: 3s)
+    Cluster-->>Bob: user_typing: { user_id: "alice", is_typing: true }
+
+    Note over Alice,Bob: 3 seconds elapse with no further typing events...
+    Note over Cluster: Typing lease auto-expires without explicit stop event!
+```
+

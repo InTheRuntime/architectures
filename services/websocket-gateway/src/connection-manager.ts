@@ -4,6 +4,7 @@ import type { ServerMessage } from "./types.js";
 
 export interface ManagedSocket {
   id: string;
+  userId: string;
   socket: WebSocket;
   isAlive: boolean;
   rooms: Set<string>;
@@ -23,10 +24,11 @@ export class ConnectionManager {
     return this.connections.get(id);
   }
 
-  public registerSocket(ws: WebSocket): ManagedSocket {
+  public registerSocket(ws: WebSocket, userId?: string): ManagedSocket {
     const id = `conn_${randomUUID().replace(/-/g, "").slice(0, 10)}`;
     const managed: ManagedSocket = {
       id,
+      userId: userId ?? `user_${id}`,
       socket: ws,
       isAlive: true,
       rooms: new Set(),
@@ -35,6 +37,13 @@ export class ConnectionManager {
 
     this.connections.set(id, managed);
     return managed;
+  }
+
+  public setUserId(connId: string, userId: string): void {
+    const managed = this.connections.get(connId);
+    if (managed) {
+      managed.userId = userId;
+    }
   }
 
   public removeSocket(id: string): void {

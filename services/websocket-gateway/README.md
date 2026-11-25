@@ -9,6 +9,8 @@ A production-minded WebSocket Gateway featuring **persistent bi-directional comm
 - ⚡ **Ultra-Low Latency**: Bi-directional messaging with $< 5\text{ms}$ delivery overhead.
 - 👥 **Room & Channel Multiplexing**: Publish-subscribe room isolation (`join_room`, `leave_room`, `send_message`).
 - 🌐 **Clustered Multi-Node Fan-Out**: Backplane pub/sub synchronization (Redis or in-memory hub) for seamless horizontal scaling across gateway instances.
+- 🟢 **Ephemeral Presence & Roster Sync**: Sliding-window heartbeat leases (Redis Sorted Sets) maintain active online member lists with zero ghost-user leakage.
+- ✍️ **Ephemeral Typing Indicators**: High-frequency typing notifications with 3-second auto-expiration without requiring explicit "stopped typing" packets.
 - 🎯 **Dynamic Topic Ref-Counting**: Gateway nodes dynamically subscribe to broker channels only when local clients exist, eliminating cluster broadcast storms.
 - 🩺 **Zombie Connection Scavenger**: Heartbeat `ping`/`pong` watchdog automatically detects dead sockets and terminates orphaned connections.
 - 📊 **Live Telemetry & Diagnostics**: Exposes `GET /stats` and `GET /health` with cluster node state and channel subscriptions.
@@ -56,14 +58,19 @@ Connect any standard WebSocket client (browser, Node.js, Python, or CLI tools li
 npx wscat -c ws://localhost:8083
 ```
 
-### 1. Join a Room
+### 1. Join a Room with User Identity
 Send:
 ```json
-{ "type": "join_room", "room": "engineering" }
+{ "type": "join_room", "room": "engineering", "user_id": "alice" }
 ```
 Receive:
 ```json
 { "type": "joined", "room": "engineering" }
+{ "type": "presence_sync", "room": "engineering", "users": ["alice", "bob"] }
+```
+All existing peers in `engineering` receive:
+```json
+{ "type": "user_joined", "room": "engineering", "user_id": "alice" }
 ```
 
 ### 2. Broadcast a Message to the Room
@@ -86,7 +93,18 @@ All other clients in room `engineering` (across **all** cluster nodes) instantly
 }
 ```
 
-### 3. Check Gateway & Cluster Observability (via HTTP)
+### 3. Ephemeral Typing Indicator
+Send:
+```json
+{ "type": "typing", "room": "engineering", "is_typing": true }
+```
+All peers in room receive:
+```json
+{ "type": "user_typing", "room": "engineering", "user_id": "alice", "is_typing": true }
+```
+*(Auto-expires on peers after 3 seconds if no further typing events are received).*
+
+### 4. Check Gateway & Cluster Observability (via HTTP)
 ```bash
 curl http://localhost:8083/stats
 ```
