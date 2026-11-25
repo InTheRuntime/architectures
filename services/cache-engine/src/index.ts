@@ -108,7 +108,7 @@ app.get("/v1/demo/expensive-query", async (c) => {
 });
 
 const port = Number(process.env.PORT) || 8082;
-console.log(`🚀 Cache Engine running on http://localhost:${port}`);
+console.log(`Cache Engine running on http://localhost:${port}`);
 
 serve({
   fetch: app.fetch,

@@ -73,7 +73,7 @@ app.all("/*", async (c) => {
 });
 
 const port = Number(process.env.PORT) || 8080;
-console.log(`🚀 Reverse Proxy & Load Balancer listening on http://localhost:${port}`);
+console.log(`Reverse Proxy & Load Balancer listening on http://localhost:${port}`);
 
 serve({
   fetch: app.fetch,

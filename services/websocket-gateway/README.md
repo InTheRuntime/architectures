@@ -6,15 +6,15 @@ A production-minded WebSocket Gateway featuring **persistent bi-directional comm
 
 ## Features
 
-- ⚡ **Ultra-Low Latency**: Bi-directional messaging with $< 5\text{ms}$ delivery overhead.
-- 👥 **Room & Channel Multiplexing**: Publish-subscribe room isolation (`join_room`, `leave_room`, `send_message`).
-- 🌐 **Clustered Multi-Node Fan-Out**: Backplane pub/sub synchronization (Redis or in-memory hub) for seamless horizontal scaling across gateway instances.
-- 🟢 **Ephemeral Presence & Roster Sync**: Sliding-window heartbeat leases (Redis Sorted Sets) maintain active online member lists with zero ghost-user leakage.
-- ✍️ **Ephemeral Typing Indicators**: High-frequency typing notifications with 3-second auto-expiration without requiring explicit "stopped typing" packets.
-- 🔄 **Disconnect Replay Buffers**: Ring buffers (in-memory) & Redis Streams track monotonic sequence IDs per room to replay missed messages after network disconnects.
-- 🎯 **Dynamic Topic Ref-Counting**: Gateway nodes dynamically subscribe to broker channels only when local clients exist, eliminating cluster broadcast storms.
-- 🩺 **Zombie Connection Scavenger**: Heartbeat `ping`/`pong` watchdog automatically detects dead sockets and terminates orphaned connections.
-- 📊 **Live Telemetry & Diagnostics**: Exposes `GET /stats` and `GET /health` with cluster node state and channel subscriptions.
+- **Ultra-Low Latency**: Bi-directional messaging with $< 5\text{ms}$ delivery overhead.
+- **Room & Channel Multiplexing**: Publish-subscribe room isolation (`join_room`, `leave_room`, `send_message`).
+- **Clustered Multi-Node Fan-Out**: Backplane pub/sub synchronization (Redis or in-memory hub) for seamless horizontal scaling across gateway instances.
+- **Ephemeral Presence & Roster Sync**: Sliding-window heartbeat leases (Redis Sorted Sets) maintain active online member lists with zero ghost-user leakage.
+- **Ephemeral Typing Indicators**: High-frequency typing notifications with 3-second auto-expiration without requiring explicit "stopped typing" packets.
+- **Disconnect Replay Buffers**: Ring buffers (in-memory) & Redis Streams track monotonic sequence IDs per room to replay missed messages after network disconnects.
+- **Dynamic Topic Ref-Counting**: Gateway nodes dynamically subscribe to broker channels only when local clients exist, eliminating cluster broadcast storms.
+- **Zombie Connection Scavenger**: Heartbeat `ping`/`pong` watchdog automatically detects dead sockets and terminates orphaned connections.
+- **Live Telemetry & Diagnostics**: Exposes `GET /stats` and `GET /health` with cluster node state and channel subscriptions.
 
 ---
 

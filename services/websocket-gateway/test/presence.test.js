@@ -6,7 +6,8 @@ import { InMemoryPubSubAdapter, InMemoryPubSubHub } from "../dist/pubsub/in-memo
 
 const tick = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("InMemoryPresenceAdapter - Sliding Window Roster & Ghost Eviction", async () => {
+test("InMemoryPresenceAdapter - Sliding Window Roster & Ghost Eviction", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
   const presence = new InMemoryPresenceAdapter({ defaultPresenceTtlMs: 50 });
 
   await presence.heartbeat("room-alpha", "user-1");
@@ -17,12 +18,12 @@ test("InMemoryPresenceAdapter - Sliding Window Roster & Ghost Eviction", async (
   assert.deepStrictEqual(active.sort(), ["user-1", "user-2"]);
   assert.strictEqual(await presence.getOnlineCount("room-alpha"), 2);
 
-  // Wait 30ms (less than 50ms TTL) and refresh user-1
-  await tick(30);
+  // Advance clock 30ms (less than 50ms TTL) and refresh user-1
+  t.mock.timers.tick(30);
   await presence.heartbeat("room-alpha", "user-1");
 
-  // Wait another 30ms (total 60ms for user-2, 30ms for user-1)
-  await tick(30);
+  // Advance clock another 30ms (total 60ms for user-2, 30ms for user-1)
+  t.mock.timers.tick(30);
 
   // user-2 should be expired and pruned; user-1 remains active!
   active = await presence.getOnlineUsers("room-alpha");
@@ -32,7 +33,8 @@ test("InMemoryPresenceAdapter - Sliding Window Roster & Ghost Eviction", async (
   await presence.disconnect();
 });
 
-test("InMemoryPresenceAdapter - Ephemeral Typing Indicators", async () => {
+test("InMemoryPresenceAdapter - Ephemeral Typing Indicators", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
   const presence = new InMemoryPresenceAdapter({ defaultTypingTtlMs: 40 });
 
   await presence.setTyping("chat-room", "alice", true);
@@ -46,8 +48,8 @@ test("InMemoryPresenceAdapter - Ephemeral Typing Indicators", async () => {
   typing = await presence.getTypingUsers("chat-room");
   assert.deepStrictEqual(typing, ["bob"]);
 
-  // Wait for bob's typing TTL to expire (40ms)
-  await tick(50);
+  // Advance clock past bob's 40ms typing TTL
+  t.mock.timers.tick(50);
   typing = await presence.getTypingUsers("chat-room");
   assert.deepStrictEqual(typing, []);
 

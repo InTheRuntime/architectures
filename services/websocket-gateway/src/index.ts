@@ -182,6 +182,6 @@ wss.on("connection", (ws: WebSocket) => {
 const port = Number(process.env.PORT) || 8083;
 server.listen(port, () => {
   console.log(
-    `🚀 WebSocket Gateway [${nodeId}] listening on ws://localhost:${port} and http://localhost:${port}`,
+    `WebSocket Gateway [${nodeId}] listening on ws://localhost:${port} and http://localhost:${port}`,
   );
 });

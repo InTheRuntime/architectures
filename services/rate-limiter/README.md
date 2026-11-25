@@ -6,10 +6,10 @@ A standalone, high-performance HTTP Rate Limiter built with **Rust**, **Axum**, 
 
 ## Features
 
-- ⚡ **Sub-millisecond Latency**: Continuous Token Bucket algorithm evaluated in Redis Lua (or local in-memory fallback).
-- 🔒 **Zero Race Conditions**: Atomic token evaluation across multi-replica gateway clusters.
-- 📜 **IETF Standards**: Returns `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, and `Retry-After`.
-- 🛡️ **Graceful Degradation**: Automatically falls back to thread-safe in-memory rate limiting if Redis is down.
+- **Sub-millisecond Latency**: Continuous Token Bucket algorithm evaluated in Redis Lua (or local in-memory fallback).
+- **Zero Race Conditions**: Atomic token evaluation across multi-replica gateway clusters.
+- **IETF Standards**: Returns `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, and `Retry-After`.
+- **Graceful Degradation**: Automatically falls back to thread-safe in-memory rate limiting if Redis is down.
 
 ---
 

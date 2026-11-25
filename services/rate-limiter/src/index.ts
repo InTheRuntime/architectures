@@ -97,7 +97,7 @@ app.get("/v1/demo/protected", async (c) => {
 });
 
 const port = Number(process.env.PORT) || 8081;
-console.log(`🚀 Rate Limiter service running on http://localhost:${port}`);
+console.log(`Rate Limiter service running on http://localhost:${port}`);
 
 serve({
   fetch: app.fetch,

@@ -6,11 +6,11 @@ A production-grade, standalone HTTP Reverse Proxy and Load Balancer featuring **
 
 ## Features
 
-- 🔄 **Multiple Balancing Algorithms**: Switch seamlessly between Round-Robin and Least-Connections.
-- 🩺 **Active Health Checking**: Background state machine automatically ejects failed backends and restores recovered ones without dropping traffic.
-- 🚀 **Dynamic Pool Management**: Add and remove upstream backend instances at runtime via admin APIs without restarting the proxy.
-- 🛡️ **Graceful 502 Bad Gateway**: Clean, structured error handling when all upstreams are unavailable.
-- 🔍 **Distributed Tracing**: Generates and propagates `X-Request-Id` and `X-Forwarded-*` headers.
+- **Multiple Balancing Algorithms**: Switch seamlessly between Round-Robin and Least-Connections.
+- **Active Health Checking**: Background state machine automatically ejects failed backends and restores recovered ones without dropping traffic.
+- **Dynamic Pool Management**: Add and remove upstream backend instances at runtime via admin APIs without restarting the proxy.
+- **Graceful 502 Bad Gateway**: Clean, structured error handling when all upstreams are unavailable.
+- **Distributed Tracing**: Generates and propagates `X-Request-Id` and `X-Forwarded-*` headers.
 
 ---
 

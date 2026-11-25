@@ -65,7 +65,7 @@ app.all("/*", async (c) => {
 });
 
 const port = Number(process.env.PORT) || 8000;
-console.log(`🚀 Unified API Gateway listening on http://localhost:${port}`);
+console.log(`Unified API Gateway listening on http://localhost:${port}`);
 
 serve({
   fetch: app.fetch,

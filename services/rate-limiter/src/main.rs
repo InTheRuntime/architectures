@@ -81,7 +81,7 @@ async fn main() {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8081".to_string());
     let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().expect("Invalid address");
 
-    info!("🚀 Rate Limiter service listening on http://{}", addr);
+    info!("Rate Limiter service listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
