@@ -33,7 +33,7 @@ architectures/
 | :--- | :--- | :--- |
 | **Core Infrastructure** | API gateways, rate limiters, load balancers, auth & bitwise RBAC | Active |
 | **Real-Time & Messaging** | WebSocket gateways, pub/sub fan-out, presence, delivery guarantees | Active |
-| **Data & Storage** | In-memory LRU caching, search indexing, event sourcing, storage engines | Active |
+| **Data & Storage** | In-memory LRU caching, LSM-Tree storage engine (`itr-lsm`), search indexing, event sourcing | Active |
 | **Media & Streaming** | Chunked/resumable file uploads, adaptive video streaming (HLS/DASH), WebRTC | Planned |
 | **AI & Automation** | Agent execution harnesses, RAG pipelines, async workflow engines | Planned |
 

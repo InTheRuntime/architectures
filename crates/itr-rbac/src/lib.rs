@@ -88,10 +88,10 @@ impl PermissionMask {
 mod tests {
     use super::*;
 
-    const PERM_READ: PermissionMask = PermissionMask::from_shift(0);   // 1 << 0 = 0x01
-    const PERM_WRITE: PermissionMask = PermissionMask::from_shift(1);  // 1 << 1 = 0x02
+    const PERM_READ: PermissionMask = PermissionMask::from_shift(0); // 1 << 0 = 0x01
+    const PERM_WRITE: PermissionMask = PermissionMask::from_shift(1); // 1 << 1 = 0x02
     const PERM_DELETE: PermissionMask = PermissionMask::from_shift(2); // 1 << 2 = 0x04
-    const PERM_ADMIN: PermissionMask = PermissionMask::from_shift(3);  // 1 << 3 = 0x08
+    const PERM_ADMIN: PermissionMask = PermissionMask::from_shift(3); // 1 << 3 = 0x08
 
     #[test]
     fn test_constant_time_permission_checks() {

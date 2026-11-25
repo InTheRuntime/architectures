@@ -1,0 +1,11 @@
+[package]
+name = "itr-lsm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Log-Structured Merge-Tree (LSM-Tree) disk storage engine with WAL, MemTable, Sparse-Indexed SSTables, and Compaction"
+
+[dependencies]
+thiserror = { workspace = true }
