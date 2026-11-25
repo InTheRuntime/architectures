@@ -44,9 +44,9 @@ Because on-disk SSTables are **strictly immutable**, you cannot erase an old key
 
 ---
 
-## 3. On-Disk SSTable Binary Format & Sparse Indexing
+## 3. On-Disk SSTable v2 Binary Format, Sparse Indexing & Bloom Filters
 
-Loading entire multi-gigabyte SSTables into RAM defeats the purpose of a disk engine. Instead, `itr-lsm` stores only a **Sparse Index** (sampling every $S$-th key, e.g. `stride = 16`) and a 16-byte **Footer**:
+Loading entire multi-gigabyte SSTables into RAM defeats the purpose of a disk engine. Instead, `itr-lsm` stores only a **Sparse Index** (sampling every $S$-th key, e.g. `stride = 16`), an embedded **Bloom Filter**, and a 28-byte **Footer** (maintaining read compatibility with legacy 16-byte v1 `0x4954524C` footers):
 
 ```text
 +----------------------------------------------------------------------+
@@ -56,8 +56,12 @@ Loading entire multi-gigabyte SSTables into RAM defeats the purpose of a disk en
 | Sparse Index Section (Offset = index_offset)                         |
 |  Every S-th key -> [k_len: u32][key][byte_offset: u64]               |
 +----------------------------------------------------------------------+
-| Footer (Fixed 16 bytes at EOF)                                       |
-|  [index_offset: u64][index_count: u32][magic: u32 = 0x4954524C]      |
+| Bloom Filter Section (Offset = bloom_offset)                         |
+|  [num_bits: u32][num_hashes: u32][bitmap bytes...]                   |
++----------------------------------------------------------------------+
+| Footer v2 (Fixed 28 bytes at EOF)                                    |
+|  [index_offset: u64][index_count: u32][bloom_offset: u64]            |
+|  [bloom_len: u32][magic: u32 = 0x4954524D]                           |
 +----------------------------------------------------------------------+
 ```
 
@@ -66,6 +70,7 @@ To look up `key`:
 1. **MemTable ($O(\log M)$)**: Return immediately if present (`Put` or `Tombstone`).
 2. **SSTables (Newest $\to$ Oldest)**:
    - **Fence Check ($O(1)$)**: Skip file immediately if `key < min_key || key > max_key`.
+   - **Bloom Filter Probe ($O(k)$ RAM)**: Compute $k$ double-hashed bit probes ($g_i = (h_1 + i \cdot h_2) \bmod m$). If any bit is `0`, the key is guaranteed absent—skip disk I/O completely!
    - **Sparse Index Binary Search ($O(\log(N/S))$)**: Find the rightmost index entry with `index_key <= key`.
    - **Bounded Disk Seek**: `seek()` directly to `start_offset` and read sequentially at most $S$ records until `stop_offset` or `record_key > key`.
    - **Tombstone Short-Circuit**: If a `Tombstone` is encountered, return `None` immediately—never search older SSTables!

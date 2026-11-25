@@ -1,4 +1,4 @@
-//! Unified LSM-Tree Storage Engine coordinating WAL, MemTable, SSTables, and Compaction.
+//! Unified LSM-Tree Storage Engine coordinating WAL, MemTable, SSTables, Bloom Filters, and Compaction.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{LsmError, Result};
 use crate::memtable::{MemTable, ValueEntry};
-use crate::sstable::SSTable;
+use crate::sstable::{LookupOutcome, SSTable};
 use crate::wal::{WalEntry, WriteAheadLog};
 
 /// Configuration parameters for `LsmEngine`.
@@ -18,6 +18,9 @@ pub struct LsmConfig {
     pub sparse_index_stride: usize,
     /// Whether to fsync WAL writes immediately (true = strict durability, false = OS page cache).
     pub sync_wal_on_write: bool,
+    /// Target false-positive rate for per-SSTable Bloom filters (e.g. `Some(0.01)` for 1%).
+    /// Set to `None` to disable Bloom filter generation.
+    pub bloom_false_positive_rate: Option<f64>,
 }
 
 impl Default for LsmConfig {
@@ -26,6 +29,7 @@ impl Default for LsmConfig {
             memtable_max_bytes: 4 * 1024 * 1024, // 4 MiB
             sparse_index_stride: 16,
             sync_wal_on_write: true,
+            bloom_false_positive_rate: Some(0.01),
         }
     }
 }
@@ -42,6 +46,9 @@ pub struct LsmStats {
     pub flushes: u64,
     pub compactions: u64,
     pub wal_recovered_entries: usize,
+    pub bloom_skips: u64,
+    pub fence_skips: u64,
+    pub disk_seeks: u64,
 }
 
 /// Disk-backed Log-Structured Merge-Tree (LSM-Tree) Key-Value Engine.
@@ -57,6 +64,9 @@ pub struct LsmEngine {
     flushes: u64,
     compactions: u64,
     wal_recovered_entries: usize,
+    bloom_skips: u64,
+    fence_skips: u64,
+    disk_seeks: u64,
 }
 
 impl LsmEngine {
@@ -105,6 +115,9 @@ impl LsmEngine {
             flushes: 0,
             compactions: 0,
             wal_recovered_entries,
+            bloom_skips: 0,
+            fence_skips: 0,
+            disk_seeks: 0,
         })
     }
 
@@ -168,11 +181,23 @@ impl LsmEngine {
 
         // 2. Check immutable SSTables from newest to oldest
         for sst in self.sstables.iter().rev() {
-            if let Some(entry) = sst.get(key_bytes)? {
-                return Ok(match entry {
-                    ValueEntry::Put(v) => Some(v),
-                    ValueEntry::Tombstone => None, // Stops search immediately!
-                });
+            match sst.get_with_outcome(key_bytes)? {
+                LookupOutcome::Found(entry) => {
+                    self.disk_seeks += 1;
+                    return Ok(match entry {
+                        ValueEntry::Put(v) => Some(v),
+                        ValueEntry::Tombstone => None, // Stops search immediately
+                    });
+                }
+                LookupOutcome::SkippedByFence => {
+                    self.fence_skips += 1;
+                }
+                LookupOutcome::SkippedByBloom => {
+                    self.bloom_skips += 1;
+                }
+                LookupOutcome::NotFoundAfterDiskSeek => {
+                    self.disk_seeks += 1;
+                }
             }
         }
 
@@ -236,6 +261,7 @@ impl LsmEngine {
             path,
             self.memtable.iter().map(|(k, v)| (k.as_slice(), v)),
             self.config.sparse_index_stride,
+            self.config.bloom_false_positive_rate,
         )?;
 
         self.sstables.push(sst);
@@ -262,6 +288,7 @@ impl LsmEngine {
             new_id,
             dest_path,
             self.config.sparse_index_stride,
+            self.config.bloom_false_positive_rate,
         )?;
 
         // Delete old SSTable files after new compacted SSTable is safely synced on disk
@@ -299,6 +326,9 @@ impl LsmEngine {
             flushes: self.flushes,
             compactions: self.compactions,
             wal_recovered_entries: self.wal_recovered_entries,
+            bloom_skips: self.bloom_skips,
+            fence_skips: self.fence_skips,
+            disk_seeks: self.disk_seeks,
         }
     }
 }

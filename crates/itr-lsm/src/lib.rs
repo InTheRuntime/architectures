@@ -4,10 +4,11 @@
 //!
 //! ## Architecture
 //! - **Write-Ahead Log (`wal.log`)**: CRC32-framed append-only log for crash durability and torn-tail recovery.
-//! - **MemTable (`BTreeMap`)**: $O(\log N)$ sorted in-memory write buffer.
-//! - **SSTables (`sst_<seq>.db`)**: Immutable on-disk sorted files with Sparse Indexing and 16-byte Footers.
+//! - **MemTable (`BTreeMap`)**: Sorted in-memory write buffer.
+//! - **SSTables (`sst_<seq>.db`)**: Immutable on-disk sorted files with Sparse Indexing, Bloom Filters, and verified Footers.
 //! - **Compaction**: Merges SSTables newest-to-oldest, reclaiming space from overwrites and tombstones.
 
+pub mod bloom;
 pub mod crc;
 pub mod engine;
 pub mod error;
@@ -15,10 +16,11 @@ pub mod memtable;
 pub mod sstable;
 pub mod wal;
 
+pub use bloom::BloomFilter;
 pub use engine::{LsmConfig, LsmEngine, LsmStats};
 pub use error::{LsmError, Result};
 pub use memtable::{MemTable, ValueEntry};
-pub use sstable::{SSTable, SparseIndexEntry};
+pub use sstable::{LookupOutcome, SSTable, SparseIndexEntry};
 
 #[cfg(test)]
 mod tests {
@@ -80,6 +82,7 @@ mod tests {
             memtable_max_bytes: 120,
             sparse_index_stride: 3, // Sparse index samples every 3rd key
             sync_wal_on_write: false,
+            ..Default::default()
         };
 
         let mut db = LsmEngine::open(&dir.0, config.clone()).unwrap();
@@ -122,6 +125,7 @@ mod tests {
             memtable_max_bytes: 1024 * 1024,
             sparse_index_stride: 2,
             sync_wal_on_write: false,
+            ..Default::default()
         };
 
         let mut db = LsmEngine::open(&dir.0, config).unwrap();
@@ -147,6 +151,7 @@ mod tests {
             memtable_max_bytes: 1024 * 1024, // Keep entries in MemTable + WAL
             sparse_index_stride: 4,
             sync_wal_on_write: true,
+            ..Default::default()
         };
 
         {
@@ -183,6 +188,7 @@ mod tests {
             memtable_max_bytes: 1024 * 1024,
             sparse_index_stride: 2,
             sync_wal_on_write: false,
+            ..Default::default()
         };
 
         let mut db = LsmEngine::open(&dir.0, config).unwrap();
@@ -253,6 +259,93 @@ mod tests {
                 (b"b".to_vec(), b"2_v2".to_vec()),
                 (b"d".to_vec(), b"4".to_vec()),
             ]
+        );
+    }
+
+    #[test]
+    fn test_bloom_filter_skips_disk_seeks_on_missing_keys() {
+        let dir = TestDir::new("bloom_disk_skip");
+        let config = LsmConfig {
+            memtable_max_bytes: 400,
+            sparse_index_stride: 4,
+            sync_wal_on_write: false,
+            bloom_false_positive_rate: Some(0.01),
+        };
+
+        let mut db = LsmEngine::open(&dir.0, config.clone()).unwrap();
+
+        // Write 100 even-numbered keys across multiple SSTables (0000, 0002, ..., 0198)
+        for i in (0..200).step_by(2) {
+            let k = format!("key_{i:04}");
+            let v = format!("val_{i:04}");
+            db.put(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+        db.flush().unwrap();
+
+        let sstable_count = db.stats().sstable_count;
+        assert!(sstable_count >= 2);
+
+        // Reopen cold from disk to verify v2 SSTable footer & Bloom Filter deserialization
+        drop(db);
+        let mut reopened = LsmEngine::open(&dir.0, config).unwrap();
+
+        // Query 100 missing odd-numbered keys strictly INSIDE [min_key, max_key] fences
+        for i in (1..200).step_by(2) {
+            let missing = format!("key_{i:04}");
+            assert_eq!(reopened.get(missing.as_bytes()).unwrap(), None);
+        }
+
+        let miss_stats = reopened.stats();
+        // With 1% FP rate, almost every overlapping SSTable check should be rejected by Bloom filter
+        assert!(
+            miss_stats.bloom_skips > miss_stats.disk_seeks * 10,
+            "Expected Bloom filter to eliminate >90% of disk seeks: skips={}, seeks={}",
+            miss_stats.bloom_skips,
+            miss_stats.disk_seeks
+        );
+
+        // Zero false negatives invariant: every present even key must still be found
+        for i in (0..200).step_by(2) {
+            let k = format!("key_{i:04}");
+            let expected = format!("val_{i:04}").into_bytes();
+            assert_eq!(reopened.get(k.as_bytes()).unwrap(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn test_bloom_filter_preserved_after_compaction() {
+        let dir = TestDir::new("bloom_compaction");
+        let config = LsmConfig {
+            memtable_max_bytes: 120,
+            sparse_index_stride: 4,
+            sync_wal_on_write: false,
+            bloom_false_positive_rate: Some(0.01),
+        };
+
+        let mut db = LsmEngine::open(&dir.0, config).unwrap();
+        for i in 0..30 {
+            db.put(format!("rec_{i:04}").as_bytes(), b"payload_data")
+                .unwrap();
+        }
+        db.flush().unwrap();
+        assert!(db.stats().sstable_count >= 2);
+
+        db.compact().unwrap();
+        assert_eq!(db.stats().sstable_count, 1);
+
+        // Query non-existent keys strictly inside [rec_0000, rec_0029] range
+        for i in 0..30 {
+            assert_eq!(
+                db.get(format!("rec_{i:04}_missing").as_bytes()).unwrap(),
+                None
+            );
+        }
+
+        let stats = db.stats();
+        assert!(
+            stats.bloom_skips >= 27,
+            "Compacted SSTable should retain a functioning Bloom filter (skips={})",
+            stats.bloom_skips
         );
     }
 }

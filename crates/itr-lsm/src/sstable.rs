@@ -1,17 +1,33 @@
-//! Immutable Sorted String Table (SSTable) with Sparse Indexing and Compaction.
+//! Immutable Sorted String Table (SSTable) with Sparse Indexing, Bloom Filters, and Compaction.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use crate::bloom::BloomFilter;
 use crate::error::{LsmError, Result};
 use crate::memtable::ValueEntry;
 
-const MAGIC: u32 = 0x4954_524C; // "ITRL"
-const FOOTER_SIZE: usize = 16; // index_offset (u64) + index_count (u32) + magic (u32)
+const MAGIC_V1: u32 = 0x4954_524C; // "ITRL" (Sparse Index only)
+const MAGIC_V2: u32 = 0x4954_524D; // "ITRM" (Sparse Index + Bloom Filter)
+const FOOTER_V1_SIZE: usize = 16; // index_offset (u64) + index_count (u32) + magic (u32)
+const FOOTER_V2_SIZE: usize = 28; // index_offset (u64) + index_count (u32) + bloom_offset (u64) + bloom_len (u32) + magic (u32)
 const OP_PUT: u8 = 0x01;
 const OP_DELETE: u8 = 0x02;
+
+/// Detailed lookup outcome for observability and disk-I/O telemetry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LookupOutcome {
+    /// Key was matched in this SSTable (`Put` or `Tombstone`).
+    Found(ValueEntry),
+    /// Key fell outside `[min_key, max_key]` fence bounds (0 disk I/O).
+    SkippedByFence,
+    /// Key rejected by the in-memory Bloom Filter (0 disk I/O).
+    SkippedByBloom,
+    /// Disk seek + sparse stride scan completed without finding the key.
+    NotFoundAfterDiskSeek,
+}
 
 /// Maps a sampled key to its byte offset in an SSTable's Data Block.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,16 +45,18 @@ pub struct SSTable {
     pub max_key: Vec<u8>,
     pub data_end_offset: u64,
     sparse_index: Vec<SparseIndexEntry>,
+    bloom: Option<BloomFilter>,
 }
 
 impl SSTable {
     /// Writes a sorted stream of entries to disk atomically (via `.tmp` + rename)
-    /// along with a Sparse Index and 16-byte Footer.
+    /// along with a Sparse Index, optional Bloom Filter (v2), and verified Footer.
     pub fn write_from_entries<'a, I>(
         id: u64,
         path: impl AsRef<Path>,
         entries: I,
         sparse_stride: usize,
+        bloom_fp_rate: Option<f64>,
     ) -> Result<Self>
     where
         I: IntoIterator<Item = (&'a [u8], &'a ValueEntry)>,
@@ -56,6 +74,7 @@ impl SSTable {
 
         let mut offset = 0u64;
         let mut sparse_index = Vec::new();
+        let mut all_keys: Vec<&'a [u8]> = Vec::new();
         let mut min_key: Option<Vec<u8>> = None;
         let mut max_key: Option<Vec<u8>> = None;
 
@@ -64,6 +83,9 @@ impl SSTable {
                 min_key = Some(key.to_vec());
             }
             max_key = Some(key.to_vec());
+            if bloom_fp_rate.is_some() {
+                all_keys.push(key);
+            }
 
             if count.is_multiple_of(stride) {
                 sparse_index.push(SparseIndexEntry {
@@ -93,17 +115,42 @@ impl SSTable {
         let index_offset = data_end_offset;
 
         // Write Sparse Index Section
+        let mut index_bytes_written = 0u64;
         for idx_entry in &sparse_index {
             let k_len = idx_entry.key.len() as u32;
             writer.write_all(&k_len.to_le_bytes())?;
             writer.write_all(&idx_entry.key)?;
             writer.write_all(&idx_entry.offset.to_le_bytes())?;
+            index_bytes_written += 4 + (idx_entry.key.len() as u64) + 8;
         }
 
-        // Write 16-byte Footer
-        writer.write_all(&index_offset.to_le_bytes())?;
-        writer.write_all(&(sparse_index.len() as u32).to_le_bytes())?;
-        writer.write_all(&MAGIC.to_le_bytes())?;
+        // Write optional Bloom Filter (v2) or legacy v1 Footer
+        let bloom = match bloom_fp_rate {
+            Some(rate) if !all_keys.is_empty() => {
+                let filter =
+                    BloomFilter::build_from_keys(all_keys.iter().copied(), all_keys.len(), rate);
+                let bloom_bytes = filter.to_bytes();
+                let bloom_offset = index_offset + index_bytes_written;
+                let bloom_len = bloom_bytes.len() as u32;
+
+                writer.write_all(&bloom_bytes)?;
+
+                // 28-byte v2 Footer
+                writer.write_all(&index_offset.to_le_bytes())?;
+                writer.write_all(&(sparse_index.len() as u32).to_le_bytes())?;
+                writer.write_all(&bloom_offset.to_le_bytes())?;
+                writer.write_all(&bloom_len.to_le_bytes())?;
+                writer.write_all(&MAGIC_V2.to_le_bytes())?;
+                Some(filter)
+            }
+            _ => {
+                // 16-byte v1 Footer
+                writer.write_all(&index_offset.to_le_bytes())?;
+                writer.write_all(&(sparse_index.len() as u32).to_le_bytes())?;
+                writer.write_all(&MAGIC_V1.to_le_bytes())?;
+                None
+            }
+        };
 
         writer.flush()?;
         writer.get_ref().sync_all()?;
@@ -118,47 +165,84 @@ impl SSTable {
             max_key: max_key.unwrap_or_default(),
             data_end_offset,
             sparse_index,
+            bloom,
         })
     }
 
-    /// Opens an existing SSTable by validating its Footer and loading only the Sparse Index.
+    /// Opens an existing SSTable (supporting both v1 and v2 formats) and loads only
+    /// its Sparse Index and optional Bloom Filter into memory.
     pub fn open(id: u64, path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = File::open(&path)?;
         let file_len = file.metadata()?.len();
         let path_str = path.display().to_string();
 
-        if file_len < FOOTER_SIZE as u64 {
+        if file_len < FOOTER_V1_SIZE as u64 {
             return Err(LsmError::CorruptSstable {
                 path: path_str,
-                reason: "File smaller than 16-byte footer".to_string(),
+                reason: "File smaller than minimum 16-byte footer".to_string(),
             });
         }
 
         let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
+        reader.seek(SeekFrom::End(-4))?;
+        let mut magic_buf = [0u8; 4];
+        reader.read_exact(&mut magic_buf)?;
+        let magic = u32::from_le_bytes(magic_buf);
 
-        let mut footer = [0u8; FOOTER_SIZE];
-        reader.read_exact(&mut footer)?;
+        let (index_offset, index_count, bloom_meta) = match magic {
+            MAGIC_V2 => {
+                if file_len < FOOTER_V2_SIZE as u64 {
+                    return Err(LsmError::CorruptSstable {
+                        path: path_str,
+                        reason: "File smaller than 28-byte v2 footer".to_string(),
+                    });
+                }
+                reader.seek(SeekFrom::End(-(FOOTER_V2_SIZE as i64)))?;
+                let mut footer = [0u8; FOOTER_V2_SIZE];
+                reader.read_exact(&mut footer)?;
 
-        let index_offset = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-        let index_count = u32::from_le_bytes(footer[8..12].try_into().unwrap()) as usize;
-        let magic = u32::from_le_bytes(footer[12..16].try_into().unwrap());
+                let index_offset = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+                let index_count = u32::from_le_bytes(footer[8..12].try_into().unwrap()) as usize;
+                let bloom_offset = u64::from_le_bytes(footer[12..20].try_into().unwrap());
+                let bloom_len = u32::from_le_bytes(footer[20..24].try_into().unwrap()) as usize;
 
-        if magic != MAGIC {
-            return Err(LsmError::InvalidMagic {
-                path: path_str,
-                expected: MAGIC,
-                actual: magic,
-            });
-        }
+                if index_offset > file_len - FOOTER_V2_SIZE as u64
+                    || bloom_offset + (bloom_len as u64) > file_len - FOOTER_V2_SIZE as u64
+                {
+                    return Err(LsmError::CorruptSstable {
+                        path: path_str,
+                        reason: "Invalid index or bloom offset in v2 footer".to_string(),
+                    });
+                }
 
-        if index_offset > file_len - FOOTER_SIZE as u64 {
-            return Err(LsmError::CorruptSstable {
-                path: path_str,
-                reason: "Invalid sparse index offset in footer".to_string(),
-            });
-        }
+                (index_offset, index_count, Some((bloom_offset, bloom_len)))
+            }
+            MAGIC_V1 => {
+                reader.seek(SeekFrom::End(-(FOOTER_V1_SIZE as i64)))?;
+                let mut footer = [0u8; FOOTER_V1_SIZE];
+                reader.read_exact(&mut footer)?;
+
+                let index_offset = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+                let index_count = u32::from_le_bytes(footer[8..12].try_into().unwrap()) as usize;
+
+                if index_offset > file_len - FOOTER_V1_SIZE as u64 {
+                    return Err(LsmError::CorruptSstable {
+                        path: path_str,
+                        reason: "Invalid sparse index offset in v1 footer".to_string(),
+                    });
+                }
+
+                (index_offset, index_count, None)
+            }
+            other => {
+                return Err(LsmError::InvalidMagic {
+                    path: path_str,
+                    expected: MAGIC_V2,
+                    actual: other,
+                });
+            }
+        };
 
         // Load Sparse Index
         reader.seek(SeekFrom::Start(index_offset))?;
@@ -177,6 +261,17 @@ impl SSTable {
 
             sparse_index.push(SparseIndexEntry { key, offset });
         }
+
+        // Load optional Bloom Filter
+        let bloom = match bloom_meta {
+            Some((bloom_offset, bloom_len)) => {
+                reader.seek(SeekFrom::Start(bloom_offset))?;
+                let mut bloom_buf = vec![0u8; bloom_len];
+                reader.read_exact(&mut bloom_buf)?;
+                Some(BloomFilter::from_bytes(&bloom_buf, &path_str)?)
+            }
+            None => None,
+        };
 
         let min_key = sparse_index
             .first()
@@ -203,17 +298,32 @@ impl SSTable {
             max_key,
             data_end_offset: index_offset,
             sparse_index,
+            bloom,
         })
     }
 
-    /// Searches this SSTable for `key` using fence bounds, binary search over the Sparse Index,
-    /// and a bounded sequential disk scan over at most one stride block.
+    /// Searches this SSTable for `key` and returns the entry if present.
     pub fn get(&self, key: &[u8]) -> Result<Option<ValueEntry>> {
+        match self.get_with_outcome(key)? {
+            LookupOutcome::Found(entry) => Ok(Some(entry)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Searches this SSTable for `key`, returning whether fence bounds or the Bloom filter
+    /// avoided disk I/O.
+    pub fn get_with_outcome(&self, key: &[u8]) -> Result<LookupOutcome> {
         if self.sparse_index.is_empty()
             || key < self.min_key.as_slice()
             || key > self.max_key.as_slice()
         {
-            return Ok(None);
+            return Ok(LookupOutcome::SkippedByFence);
+        }
+
+        if let Some(bloom) = &self.bloom {
+            if !bloom.may_contain(key) {
+                return Ok(LookupOutcome::SkippedByBloom);
+            }
         }
 
         // Find the rightmost sparse index entry whose key <= target key
@@ -221,7 +331,7 @@ impl SSTable {
             .sparse_index
             .partition_point(|e| e.key.as_slice() <= key);
         if pos == 0 {
-            return Ok(None);
+            return Ok(LookupOutcome::SkippedByFence);
         }
 
         let start_offset = self.sparse_index[pos - 1].offset;
@@ -239,13 +349,18 @@ impl SSTable {
         while reader.stream_position()? < stop_offset {
             let (rec_key, rec_val) = Self::read_record(&mut reader, &path_str)?;
             match rec_key.as_slice().cmp(key) {
-                std::cmp::Ordering::Equal => return Ok(Some(rec_val)),
-                std::cmp::Ordering::Greater => return Ok(None), // Sorted invariant: cannot appear later
+                std::cmp::Ordering::Equal => return Ok(LookupOutcome::Found(rec_val)),
+                std::cmp::Ordering::Greater => return Ok(LookupOutcome::NotFoundAfterDiskSeek),
                 std::cmp::Ordering::Less => continue,
             }
         }
 
-        Ok(None)
+        Ok(LookupOutcome::NotFoundAfterDiskSeek)
+    }
+
+    /// Returns `true` if this SSTable carries an embedded Bloom filter.
+    pub fn has_bloom_filter(&self) -> bool {
+        self.bloom.is_some()
     }
 
     /// Reads all entries from this SSTable in sorted order (used for compaction and range scans).
@@ -307,6 +422,7 @@ impl SSTable {
         new_id: u64,
         dest_path: impl AsRef<Path>,
         sparse_stride: usize,
+        bloom_fp_rate: Option<f64>,
     ) -> Result<Option<Self>> {
         let mut merged: BTreeMap<Vec<u8>, ValueEntry> = BTreeMap::new();
 
@@ -329,6 +445,7 @@ impl SSTable {
             dest_path,
             merged.iter().map(|(k, v)| (k.as_slice(), v)),
             sparse_stride,
+            bloom_fp_rate,
         )?;
 
         Ok(Some(compacted))
