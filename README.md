@@ -19,7 +19,6 @@ architectures/
 │   ├── contracts/          # Shared Protobuf (.proto) & OpenAPI schemas
 │   └── diagrams/           # System topologies & sequence diagrams
 ├── services/               # Standalone backend system implementations
-├── apps/                   # Reference clients, demos, and test harnesses
 ├── packages/               # Shared TypeScript packages (types, utilities, UI)
 ├── crates/                 # Shared Rust crates (auth, errors, telemetry)
 ├── Cargo.toml              # Rust workspace root

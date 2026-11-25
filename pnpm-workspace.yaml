@@ -1,5 +1,4 @@
 packages:
   - "packages/*"
-  - "apps/*"
   - "services/*"
   - "services/*/control-plane"
